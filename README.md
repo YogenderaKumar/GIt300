@@ -25,6 +25,6 @@ terraform init -reconfigure
 The configuration looks up the existing `yogistorage` resource group and creates
 only an App Service plan and Linux web app in it; it does not manage or recreate
 the resource group or storage account. Both App Service resources are deployed
-to `Southeast Asia`. The web app name `yogiwebapp` must be globally unique across Azure.
+to `West US 3`. The web app name `yogiwebapp` must be globally unique across Azure.
 Confirm the Terraform plan shows only the App Service plan and web app before
 allowing the pipeline to apply it.

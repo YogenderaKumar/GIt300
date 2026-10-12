@@ -4,10 +4,6 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 4.0"
     }
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.6"
-    }
   }
 
   backend "azurerm" {
@@ -23,19 +19,23 @@ provider "azurerm" {
   features {}
 }
 
-resource "azurerm_resource_group" "storage" {
-  name     = "yogistorage"
-  location = "westus"
+data "azurerm_resource_group" "existing" {
+  name = "yogistorage"
 }
 
-resource "azurerm_storage_account" "main" {
-  name                     = "yogialphastorage321"
-  resource_group_name      = azurerm_resource_group.storage.name
-  location                 = azurerm_resource_group.storage.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  account_kind             = "StorageV2"
-  min_tls_version          = "TLS1_2"
+resource "azurerm_service_plan" "webapp" {
+  name                = "yogiwebapp-plan"
+  location            = data.azurerm_resource_group.existing.location
+  resource_group_name = data.azurerm_resource_group.existing.name
+  os_type             = "Linux"
+  sku_name            = "B1"
+}
 
-  allow_nested_items_to_be_public = false
+resource "azurerm_linux_web_app" "main" {
+  name                = "yogiwebapp"
+  location            = data.azurerm_resource_group.existing.location
+  resource_group_name = data.azurerm_resource_group.existing.name
+  service_plan_id     = azurerm_service_plan.webapp.id
+
+  site_config {}
 }

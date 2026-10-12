@@ -22,19 +22,8 @@ If there is no existing local state, initialize the backend with:
 terraform init -reconfigure
 ```
 
-Then import the existing `yogistorage` resource group if it is not already in
-state:
-
-```sh
-terraform import azurerm_resource_group.storage /subscriptions/<AZURE_SUBSCRIPTION_ID>/resourceGroups/yogistorage
-```
-
-If the `yogialphastorage321` storage account already exists and is not in state,
-import it as well:
-
-```sh
-terraform import azurerm_storage_account.main /subscriptions/<AZURE_SUBSCRIPTION_ID>/resourceGroups/yogistorage/providers/Microsoft.Storage/storageAccounts/yogialphastorage321
-```
-
-After importing, run `terraform plan` and confirm the proposed changes before
-allowing the pipeline to apply them.
+The configuration looks up the existing `yogistorage` resource group and creates
+only an App Service plan and Linux web app in it; it does not manage or recreate
+the resource group or storage account. The web app name `yogiwebapp` must be
+globally unique across Azure. Confirm the Terraform plan shows only the App
+Service plan and web app before allowing the pipeline to apply it.

@@ -25,7 +25,7 @@ data "azurerm_resource_group" "existing" {
 
 resource "azurerm_service_plan" "webapp" {
   name                = "yogiwebapp-plan"
-  location            = data.azurerm_resource_group.existing.location
+  location            = "eastus"
   resource_group_name = data.azurerm_resource_group.existing.name
   os_type             = "Linux"
   sku_name            = "B1"
@@ -33,7 +33,7 @@ resource "azurerm_service_plan" "webapp" {
 
 resource "azurerm_linux_web_app" "main" {
   name                = "yogiwebapp"
-  location            = data.azurerm_resource_group.existing.location
+  location            = "eastus"
   resource_group_name = data.azurerm_resource_group.existing.name
   service_plan_id     = azurerm_service_plan.webapp.id
 

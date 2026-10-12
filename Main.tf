@@ -31,20 +31,3 @@ resource "azurerm_storage_account" "main" {
 
   allow_nested_items_to_be_public = false
 }
-
-resource "azurerm_service_plan" "webapp" {
-  name                = "yogiwebapp-plan"
-  location            = azurerm_resource_group.storage.location
-  resource_group_name = azurerm_resource_group.storage.name
-  os_type             = "Linux"
-  sku_name            = "B1"
-}
-
-resource "azurerm_linux_web_app" "main" {
-  name                = "yogiwebapp"
-  location            = azurerm_resource_group.storage.location
-  resource_group_name = azurerm_resource_group.storage.name
-  service_plan_id     = azurerm_service_plan.webapp.id
-
-  site_config {}
-}

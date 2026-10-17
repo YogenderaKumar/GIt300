@@ -1,37 +1,67 @@
-name: Destroy Web App
+name: 'Terraform Destroy Webapp'
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'yes' to confirm running the destroy (required)"
+        required: true
+        default: "no"
+      target:
+        description: "Optional: terraform resource address to target (e.g. module.web.azurerm_app_service.example). Leave empty to destroy all resources in the state."
+        required: false
+        default: ""
 
 jobs:
-  destroy-webapp:
-    name: Destroy web app and service plan
+  terraform-destroy:
+    name: 'Terraform Destroy'
+    # Prevent accidental runs by gating on explicit confirmation
+    if: ${{ github.event.inputs.confirm == 'yes' }}
     runs-on: ubuntu-latest
+    # Optional: set an environment that requires manual approval in repo settings (recommended)
+    environment: production
+
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Initialize Terraform
-        run: terraform init -input=false
-        env:
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Show Terraform version
+        run: terraform version
 
-      - name: Destroy web app and service plan
-        run: >-
-          terraform destroy
-          -target=azurerm_linux_web_app.main
-          -target=azurerm_service_plan.webapp
-          -auto-approve
-          -input=false
-        env:
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Terraform Init (reconfigure backend)
+        run: terraform init -reconfigure -input=false -upgrade
+
+      - name: Show current state resources (safe)
+        run: |
+          echo "Listing resources from state (if present)..."
+          terraform state list || echo "No resources in state or state inaccessible."
+
+      - name: Terraform Plan (destroy preview)
+        run: |
+          set -e
+          if [ -n "${{ github.event.inputs.target }}" ]; then
+            echo "Planning destroy for target: '${{ github.event.inputs.target }}'"
+            terraform plan -destroy -target="${{ github.event.inputs.target }}" -out=tfplan -input=false
+          else
+            echo "Planning full destroy (all resources in state)"
+            terraform plan -destroy -out=tfplan -input=false
+          fi
+
+      - name: Terraform Apply Destroy (execute)
+        run: |
+          echo "Applying destroy plan..."
+          terraform apply -input=false tfplan
+
+      - name: Optional: print final state summary
+        run: |
+          echo "Final state resource list (if state still exists):"
+          terraform state list || echo "No resources in state."

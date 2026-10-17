@@ -1,67 +1,114 @@
-name: 'Terraform Destroy Webapp'
+name: "Terraform Auto Destroy (webapp + plan)"
 
 on:
+  # Manual run if needed
   workflow_dispatch:
     inputs:
-      confirm:
-        description: "Type 'yes' to confirm running the destroy (required)"
-        required: true
-        default: "no"
-      target:
-        description: "Optional: terraform resource address to target (e.g. module.web.azurerm_app_service.example). Leave empty to destroy all resources in the state."
+      trigger_mode:
+        description: "How this run was triggered; used for logging. (auto or manual)"
         required: false
-        default: ""
+        default: "auto"
+  # Also run when pushing to a dedicated branch (so you can automate by pushing to `destroy/*`)
+  push:
+    branches:
+      - 'destroy/*'
 
 jobs:
-  terraform-destroy:
-    name: 'Terraform Destroy'
-    # Prevent accidental runs by gating on explicit confirmation
-    if: ${{ github.event.inputs.confirm == 'yes' }}
+  terraform-auto-destroy:
+    name: 'Terraform Auto Destroy'
     runs-on: ubuntu-latest
-    # Optional: set an environment that requires manual approval in repo settings (recommended)
-    environment: production
 
     env:
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+      # Optional: override workspace if you use workspaces
+      # TF_WORKSPACE: default
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.0' # adjust to your version
 
       - name: Show Terraform version
         run: terraform version
 
-      - name: Terraform Init (reconfigure backend)
-        run: terraform init -reconfigure -input=false -upgrade
-
-      - name: Show current state resources (safe)
+      - name: Terraform init (reconfigure backend)
         run: |
-          echo "Listing resources from state (if present)..."
-          terraform state list || echo "No resources in state or state inaccessible."
+          terraform init -reconfigure -input=false -upgrade
 
-      - name: Terraform Plan (destroy preview)
+      - name: List resources in state (safe)
+        id: list_state
         run: |
+          echo "Listing resources in current state..."
+          # If terraform state is inaccessible this will return non-zero; handle safely
+          set +e
+          STATE_LIST=$(terraform state list 2>/dev/null || true)
+          echo "state_list<<EOF" >> $GITHUB_OUTPUT
+          echo "$STATE_LIST" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
           set -e
-          if [ -n "${{ github.event.inputs.target }}" ]; then
-            echo "Planning destroy for target: '${{ github.event.inputs.target }}'"
-            terraform plan -destroy -target="${{ github.event.inputs.target }}" -out=tfplan -input=false
+      - name: Detect webapps and app_service_plans
+        id: detect
+        run: |
+          STATE_LIST="${{ steps.list_state.outputs.state_list }}"
+          echo "State entries:"
+          echo "$STATE_LIST" || true
+
+          # Find azurerm_linux_web_app.* resource addresses
+          WEBAPPS=$(printf "%s\n" "$STATE_LIST" | grep -E '^azurerm_linux_web_app\.' || true)
+          PLANS=$(printf "%s\n" "$STATE_LIST" | grep -E '^azurerm_app_service_plan\.' || true)
+
+          echo "webapps<<EOF" >> $GITHUB_OUTPUT
+          echo "$WEBAPPS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "plans<<EOF" >> $GITHUB_OUTPUT
+          echo "$PLANS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          if [ -z "$WEBAPPS" ] && [ -z "$PLANS" ]; then
+            echo "No webapp or app_service_plan addresses found in state; nothing to destroy."
           else
-            echo "Planning full destroy (all resources in state)"
-            terraform plan -destroy -out=tfplan -input=false
+            echo "Found webapps:"
+            echo "$WEBAPPS"
+            echo "Found plans:"
+            echo "$PLANS"
           fi
 
-      - name: Terraform Apply Destroy (execute)
+      - name: Destroy webapps (targeted)
+        if: ${{ steps.detect.outputs.webapps != '' }}
         run: |
-          echo "Applying destroy plan..."
-          terraform apply -input=false tfplan
+          set -euo pipefail
+          WEBAPPS="${{ steps.detect.outputs.webapps }}"
+          echo "$WEBAPPS" | while IFS= read -r addr; do
+            if [ -z "$addr" ]; then continue; fi
+            echo "Destroying webapp resource: $addr"
+            terraform plan -destroy -target="$addr" -out=tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')" -input=false
+            terraform apply -input=false -auto-approve tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')"
+            echo "Finished destroying $addr"
+          done
 
-      - name: Optional: print final state summary
+      - name: Destroy app service plans (targeted)
+        if: ${{ steps.detect.outputs.plans != '' }}
         run: |
-          echo "Final state resource list (if state still exists):"
-          terraform state list || echo "No resources in state."
+          set -euo pipefail
+          PLANS="${{ steps.detect.outputs.plans }}"
+          echo "$PLANS" | while IFS= read -r addr; do
+            if [ -z "$addr" ]; then continue; fi
+            echo "Destroying app service plan: $addr"
+            terraform plan -destroy -target="$addr" -out=tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')" -input=false
+            terraform apply -input=false -auto-approve tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')"
+            echo "Finished destroying $addr"
+          done
+
+      - name: Final state summary
+        run: |
+          echo "Remaining resources in state (if any):"
+          terraform state list || echo "No state or no resources."

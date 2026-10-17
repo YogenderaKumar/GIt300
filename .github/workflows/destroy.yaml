@@ -1,114 +1,131 @@
-name: "Terraform Auto Destroy (webapp + plan)"
+name: 'Terraform Deploy VM'
 
 on:
-  # Manual run if needed
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
     inputs:
-      trigger_mode:
-        description: "How this run was triggered; used for logging. (auto or manual)"
-        required: false
-        default: "auto"
-  # Also run when pushing to a dedicated branch (so you can automate by pushing to `destroy/*`)
-  push:
-    branches:
-      - 'destroy/*'
+      action:
+        description: 'Terraform action to run'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
 
 jobs:
-  terraform-auto-destroy:
-    name: 'Terraform Auto Destroy'
+  terraform:
+    name: 'Terraform Plan & Apply'
     runs-on: ubuntu-latest
-
-    env:
-      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      TF_IN_AUTOMATION: "true"
-      # Optional: override workspace if you use workspaces
-      # TF_WORKSPACE: default
+    # This job runs for pushes, PRs, or if you manually select plan/apply
+    if: |
+      github.event_name == 'push' || 
+      github.event_name == 'pull_request' || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action != 'destroy')
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.6.0' # adjust to your version
 
-      - name: Show Terraform version
-        run: terraform version
+      - name: Terraform Format Check
+        run: |
+          terraform fmt -check -recursive
 
-      - name: Terraform init (reconfigure backend)
+      - name: Terraform Init (pull request)
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform init -backend=false -input=false -upgrade
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init (push/dispatch)
+        if: github.event_name != 'pull_request'
         run: |
           terraform init -reconfigure -input=false -upgrade
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: List resources in state (safe)
-        id: list_state
+      - name: Terraform Validate
         run: |
-          echo "Listing resources in current state..."
-          # If terraform state is inaccessible this will return non-zero; handle safely
-          set +e
-          STATE_LIST=$(terraform state list 2>/dev/null || true)
-          echo "state_list<<EOF" >> $GITHUB_OUTPUT
-          echo "$STATE_LIST" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          set -e
-      - name: Detect webapps and app_service_plans
-        id: detect
+          terraform validate
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Plan
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
         run: |
-          STATE_LIST="${{ steps.list_state.outputs.state_list }}"
-          echo "State entries:"
-          echo "$STATE_LIST" || true
+          echo "Running Terraform plan..."
+          terraform plan -input=false
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-          # Find azurerm_linux_web_app.* resource addresses
-          WEBAPPS=$(printf "%s\n" "$STATE_LIST" | grep -E '^azurerm_linux_web_app\.' || true)
-          PLANS=$(printf "%s\n" "$STATE_LIST" | grep -E '^azurerm_app_service_plan\.' || true)
-
-          echo "webapps<<EOF" >> $GITHUB_OUTPUT
-          echo "$WEBAPPS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-          echo "plans<<EOF" >> $GITHUB_OUTPUT
-          echo "$PLANS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-          if [ -z "$WEBAPPS" ] && [ -z "$PLANS" ]; then
-            echo "No webapp or app_service_plan addresses found in state; nothing to destroy."
-          else
-            echo "Found webapps:"
-            echo "$WEBAPPS"
-            echo "Found plans:"
-            echo "$PLANS"
-          fi
-
-      - name: Destroy webapps (targeted)
-        if: ${{ steps.detect.outputs.webapps != '' }}
+      - name: Terraform Apply
+        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
         run: |
-          set -euo pipefail
-          WEBAPPS="${{ steps.detect.outputs.webapps }}"
-          echo "$WEBAPPS" | while IFS= read -r addr; do
-            if [ -z "$addr" ]; then continue; fi
-            echo "Destroying webapp resource: $addr"
-            terraform plan -destroy -target="$addr" -out=tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')" -input=false
-            terraform apply -input=false -auto-approve tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')"
-            echo "Finished destroying $addr"
-          done
+          echo "Running Terraform apply..."
+          terraform apply -auto-approve -input=false
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Destroy app service plans (targeted)
-        if: ${{ steps.detect.outputs.plans != '' }}
-        run: |
-          set -euo pipefail
-          PLANS="${{ steps.detect.outputs.plans }}"
-          echo "$PLANS" | while IFS= read -r addr; do
-            if [ -z "$addr" ]; then continue; fi
-            echo "Destroying app service plan: $addr"
-            terraform plan -destroy -target="$addr" -out=tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')" -input=false
-            terraform apply -input=false -auto-approve tfplan-"$(echo $addr | tr '/' '_' | tr ' ' '_')"
-            echo "Finished destroying $addr"
-          done
+  terraform-destroy:
+    name: 'Terraform Destroy'
+    runs-on: ubuntu-latest
+    # This job ONLY runs if you manually select 'destroy' from the drop-down menu
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
 
-      - name: Final state summary
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init (destroy)
         run: |
-          echo "Remaining resources in state (if any):"
-          terraform state list || echo "No state or no resources."
+          terraform init -reconfigure -input=false -upgrade
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Validate (destroy)
+        run: |
+          terraform validate
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Destroy
+        run: |
+          echo "Running Terraform destroy..."
+          terraform destroy -auto-approve -input=false
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

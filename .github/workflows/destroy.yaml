@@ -1,4 +1,4 @@
-name: 'Terraform Deploy VM'
+name: 'Terraform Destroy resource'
 
 on:
   push:

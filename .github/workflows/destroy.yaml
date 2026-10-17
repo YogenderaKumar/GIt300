@@ -1,31 +1,27 @@
-name: 'Terraform Destroy resource'
+name: 'Terraform Automated Destroy'
 
 on:
   push:
-    branches: ["main"]
-  pull_request:
     branches: ["main"]
   workflow_dispatch:
     inputs:
       action:
         description: 'Terraform action to run'
         required: true
-        default: 'apply'
+        default: 'destroy'
         type: choice
         options:
-          - plan
-          - apply
           - destroy
+          - plan
 
 jobs:
-  terraform:
-    name: 'Terraform Plan & Apply'
+  terraform-destroy:
+    name: 'Terraform Automated Destroy'
     runs-on: ubuntu-latest
-    # This job runs for pushes, PRs, or if you manually select plan/apply
+    # Runs on any push to main, or if manually triggered with destroy/plan
     if: |
       github.event_name == 'push' || 
-      github.event_name == 'pull_request' || 
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.action != 'destroy')
+      github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout Code
@@ -38,18 +34,7 @@ jobs:
         run: |
           terraform fmt -check -recursive
 
-      - name: Terraform Init (pull request)
-        if: github.event_name == 'pull_request'
-        run: |
-          terraform init -backend=false -input=false -upgrade
-        env:
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Terraform Init (push/dispatch)
-        if: github.event_name != 'pull_request'
+      - name: Terraform Init
         run: |
           terraform init -reconfigure -input=false -upgrade
         env:
@@ -67,62 +52,23 @@ jobs:
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Terraform Plan
+      # Optional: Runs a plan first if triggered via push, or if manually selected 'plan'
+      - name: Terraform Destroy Plan
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
         run: |
-          echo "Running Terraform plan..."
-          terraform plan -input=false
+          echo "Previewing what will be destroyed..."
+          terraform plan -destroy -input=false
         env:
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Terraform Apply
-        if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply')
+      # The actual deletion execution step
+      - name: Terraform Destroy Execute
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy')
         run: |
-          echo "Running Terraform apply..."
-          terraform apply -auto-approve -input=false
-        env:
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-  terraform-destroy:
-    name: 'Terraform Destroy'
-    runs-on: ubuntu-latest
-    # This job ONLY runs if you manually select 'destroy' from the drop-down menu
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
-
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform Init (destroy)
-        run: |
-          terraform init -reconfigure -input=false -upgrade
-        env:
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Terraform Validate (destroy)
-        run: |
-          terraform validate
-        env:
-          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Terraform Destroy
-        run: |
-          echo "Running Terraform destroy..."
+          echo "Running automated Terraform destroy..."
           terraform destroy -auto-approve -input=false
         env:
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}

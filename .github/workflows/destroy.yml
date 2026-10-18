@@ -1,75 +1,113 @@
-name: 'Terraform Automated Destroy'
+name: Terraform Automated Destroy
 
 on:
-  push:
-    branches: ["maint"]
   workflow_dispatch:
     inputs:
       action:
-        description: 'Terraform action to run'
+        description: Terraform action to run
         required: true
-        default: 'destroy'
+        default: plan
         type: choice
         options:
-          - destroy
           - plan
+          - destroy
 
 jobs:
   terraform-destroy:
-    name: 'Terraform Automated Destroy'
+    name: Destroy web app and service plan
     runs-on: ubuntu-latest
-    # Runs on any push to main, or if manually triggered with destroy/plan
-    if: |
-      github.event_name == 'push' || 
-      github.event_name == 'workflow_dispatch'
 
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Terraform
+      - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Terraform Format Check
-        run: |
-          terraform fmt -check -recursive
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
 
-      - name: Terraform Init
-        run: |
-          terraform init -reconfigure -input=false -upgrade
+      - name: Initialize Terraform
+        run: terraform init -reconfigure -input=false
         env:
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Terraform Validate
-        run: |
-          terraform validate
+      - name: Validate Terraform
+        run: terraform validate
         env:
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Optional: Runs a plan first if triggered via push, or if manually selected 'plan'
-      - name: Terraform Destroy Plan
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
+      - name: Track existing web app and service plan in remote state
+        shell: bash
         run: |
-          echo "Previewing what will be destroyed..."
-          terraform plan -destroy -input=false
+          state="$(terraform state list)"
+
+          if ! grep -Fxq 'azurerm_linux_web_app.main' <<< "$state"; then
+            terraform import -input=false \
+              azurerm_linux_web_app.main \
+              "/subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/Yogi_Terform/providers/Microsoft.Web/sites/yogiwebapp"
+          fi
+
+          state="$(terraform state list)"
+          if ! grep -Fxq 'azurerm_service_plan.webapp' <<< "$state"; then
+            terraform import -input=false \
+              azurerm_service_plan.webapp \
+              "/subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/Yogi_Terform/providers/Microsoft.Web/serverfarms/yogiwebapp-plan"
+          fi
+
+          terraform state list
         env:
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # The actual deletion execution step
-      - name: Terraform Destroy Execute
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy')
+      - name: Plan targeted destroy
         run: |
-          echo "Running automated Terraform destroy..."
-          terraform destroy -auto-approve -input=false
+          terraform plan -destroy \
+            -target=azurerm_linux_web_app.main \
+            -target=azurerm_service_plan.webapp \
+            -input=false \
+            -out=destroy.tfplan
+        env:
+          ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify destroy plan only removes the web app and service plan
+        run: |
+          terraform show -json destroy.tfplan | python3 -c '
+          import json
+          import sys
+
+          plan = json.load(sys.stdin)
+          deleted = sorted(
+              resource["address"]
+              for resource in plan.get("resource_changes", [])
+              if "delete" in resource["change"]["actions"]
+          )
+          expected = sorted([
+              "azurerm_linux_web_app.main",
+              "azurerm_service_plan.webapp",
+          ])
+
+          if deleted != expected:
+              print(f"Refusing destroy; planned deletions were: {deleted}", file=sys.stderr)
+              sys.exit(1)
+
+          print("Verified destroy plan: web app and service plan only.")
+          '
+
+      - name: Apply destroy plan
+        if: github.event.inputs.action == 'destroy'
+        run: terraform apply -auto-approve -input=false destroy.tfplan
         env:
           ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}

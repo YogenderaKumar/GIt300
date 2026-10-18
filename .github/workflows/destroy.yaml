@@ -2,7 +2,7 @@ name: 'Terraform Automated Destroy'
 
 on:
   push:
-    branches: ["main"]
+    branches: ["maint"]
   workflow_dispatch:
     inputs:
       action:

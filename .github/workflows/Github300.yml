@@ -2,9 +2,9 @@ name: 'Terraform Deploy VM'
 
 on:
   push:
-    branches: ["maint"]
+    branches: ["main"]
   pull_request:
-    branches: ["maint"]
+    branches: ["main"]
 
 jobs:
   terraform:
